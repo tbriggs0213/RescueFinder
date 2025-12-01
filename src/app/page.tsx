@@ -147,7 +147,7 @@ export default function Home() {
             </h1>
             <p className="text-lg text-primary-600 max-w-2xl mx-auto">
               Discover adoptable pets from shelters and rescues across Los
-              Angeles County. Every pet deserves a loving home.
+              Angeles County. Every pet deserves a loving home. 🐾
             </p>
           </div>
 
