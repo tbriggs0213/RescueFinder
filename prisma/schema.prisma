@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Shelter {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  website      String?
+  adoptionUrl  String?
+  email        String?
+  phone        String?
+  street       String?
+  city         String
+  state        String   @default("CA")
+  postcode     String?
+  latitude     Float?
+  longitude    Float?
+  platform     String
+  scraperKey   String
+  isActive     Boolean  @default(true)
+  lastScraped  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  pets         Pet[]
+}
+
+model Pet {
+  id                String    @id @default(cuid())
+  externalId        String
+  name              String
+  species           String
+  breed             String
+  breedSecondary    String?
+  age               String
+  gender            String
+  size              String
+  description       String?
+  color             String?
+  status            String    @default("adoptable")
+  
+  spayedNeutered    Boolean   @default(false)
+  houseTrained      Boolean   @default(false)
+  specialNeeds      Boolean   @default(false)
+  shotsCurrent      Boolean   @default(false)
+  goodWithChildren  Boolean?
+  goodWithDogs      Boolean?
+  goodWithCats      Boolean?
+  
+  adoptionUrl       String?
+  
+  intakeDate        DateTime?
+  publishedAt       DateTime  @default(now())
+  lastSeen          DateTime  @default(now())
+  isAvailable       Boolean   @default(true)
+  
+  shelterId         String
+  shelter           Shelter   @relation(fields: [shelterId], references: [id], onDelete: Cascade)
+  photos            PetPhoto[]
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([shelterId, externalId])
+  @@index([species])
+  @@index([breed])
+  @@index([age])
+  @@index([isAvailable])
+}
+
+model PetPhoto {
+  id        String   @id @default(cuid())
+  petId     String
+  pet       Pet      @relation(fields: [petId], references: [id], onDelete: Cascade)
+  url       String
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([petId])
+}
+
+model ScrapeLog {
+  id           String   @id @default(cuid())
+  shelterId    String
+  shelterName  String
+  status       String
+  petsFound    Int      @default(0)
+  petsAdded    Int      @default(0)
+  petsUpdated  Int      @default(0)
+  petsRemoved  Int      @default(0)
+  errorMessage String?
+  duration     Int
+  createdAt    DateTime @default(now())
+
+  @@index([shelterId])
+  @@index([createdAt])
+}

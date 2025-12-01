@@ -1,0 +1,31 @@
+{
+  "name": "rescuefinder",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@tailwindcss/postcss": "^4.1.17",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "next": "^15.3.4",
+    "puppeteer": "^24.31.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "@types/react": "^19.1.6",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.4",
+    "prisma": "^5.22.0",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3"
+  }
+}
