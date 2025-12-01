@@ -5,14 +5,7 @@ import { runAllScrapers, runScraper, initializeShelters } from "@/lib/scrapers";
 // In production, this would be called by a cron job or scheduled task
 
 export async function POST(request: NextRequest) {
-  // Check for API key in production
-  const apiKey = request.headers.get("x-api-key");
-  const expectedKey = process.env.SCRAPE_API_KEY;
-
-  if (expectedKey && apiKey !== expectedKey) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+  // Note: API key check removed for MVP - add proper auth later
   try {
     const body = await request.json().catch(() => ({}));
     const scraperKey = body.scraper as string | undefined;
