@@ -92,17 +92,47 @@ async function scrapeWithBrowserless(): Promise<Map<string, ScrapedPet[]>> {
     // Load the search page - use shorter timeout for Browserless free tier
     console.log("Loading LA County search page...");
     await page.goto(`${SEARCH_URL}?PageNumber=1&SortType=0&PageSize=100`, {
-      waitUntil: "networkidle2",
-      timeout: 45000, // 45 seconds to stay under 1 min limit
+      waitUntil: "networkidle0", // Faster than networkidle2
+      timeout: 30000,
     });
 
     // Brief wait for API calls
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    console.log(`After page 1: ${allAnimals.length} animals`);
 
-    console.log(`After first page: ${allAnimals.length} animals intercepted`);
+    // Quick pagination - try to get more pages within 1-minute limit
+    const startTime = Date.now();
+    const maxTime = 50000; // 50 seconds max (leave buffer for cleanup)
+    let pageNum = 2;
 
-    // If we got animals from first page, that's enough for free tier
-    // (Can't do pagination due to 1-minute limit)
+    while (Date.now() - startTime < maxTime && pageNum <= 10) {
+      try {
+        console.log(`Loading page ${pageNum}...`);
+        const prevCount = allAnimals.length;
+        
+        await page.goto(`${SEARCH_URL}?PageNumber=${pageNum}&SortType=0&PageSize=100`, {
+          waitUntil: "networkidle0",
+          timeout: 8000, // Quick timeout per page
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        console.log(`After page ${pageNum}: ${allAnimals.length} animals (${allAnimals.length - prevCount} new)`);
+        
+        // If no new animals, we've reached the end
+        if (allAnimals.length === prevCount) {
+          console.log("No new animals, stopping pagination");
+          break;
+        }
+        
+        pageNum++;
+      } catch (e) {
+        console.log(`Page ${pageNum} timed out, continuing...`);
+        pageNum++;
+      }
+    }
+
+    console.log(`Pagination complete: ${allAnimals.length} total animals in ${Date.now() - startTime}ms`);
 
     // If no API interception worked, try HTML scraping
     if (allAnimals.length === 0) {
