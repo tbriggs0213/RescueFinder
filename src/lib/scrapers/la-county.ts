@@ -1,11 +1,11 @@
 // LA County Animal Care Centers Scraper
 // Source: https://animalcare.lacounty.gov/dacc-search/
-// Uses direct API calls (no Puppeteer needed for Render compatibility)
+// Uses Browserless.io for cloud browser (works on Render free tier)
 
 import { Scraper, ScrapedPet, ScrapeResult, normalizeAge, normalizeSize, normalizeGender } from "./types";
 import { getSheltersByScraperKey } from "../shelters";
 
-const API_URL = "https://animalcare.lacounty.gov/wp-json/wppro-acc/v1/get/animals";
+const SEARCH_URL = "https://animalcare.lacounty.gov/dacc-search/";
 const IMAGE_BASE = "https://daccanimalimagesprod.blob.core.windows.net/images/";
 
 // Map location names to shelter slugs
@@ -30,24 +30,7 @@ function mapLocationToSlug(location: string): string {
   return "la-county-downey";
 }
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = 30000): Promise<Response> {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
-  }
-}
-
-async function scrapeDirectAPI(): Promise<Map<string, ScrapedPet[]>> {
+async function scrapeWithBrowserless(): Promise<Map<string, ScrapedPet[]>> {
   const shelterPets = new Map<string, ScrapedPet[]>();
   
   // Initialize all shelter slugs with empty arrays
@@ -58,204 +41,273 @@ async function scrapeDirectAPI(): Promise<Map<string, ScrapedPet[]>> {
 
   let allAnimals: any[] = [];
 
+  // Check for Browserless API key
+  const browserlessToken = process.env.BROWSERLESS_API_KEY;
+  
+  if (!browserlessToken) {
+    console.log("No BROWSERLESS_API_KEY found, trying local Puppeteer...");
+    return scrapeWithLocalPuppeteer(shelterPets);
+  }
+
   try {
-    console.log("Attempting direct API call to LA County...");
+    const puppeteer = await import("puppeteer-core");
     
-    // Try the direct API endpoint with various parameters
-    const apiUrls = [
-      `${API_URL}?PageNumber=1&PageSize=500`,
-      `${API_URL}?page=1&per_page=500`,
-      `${API_URL}`,
-      "https://animalcare.lacounty.gov/wp-json/wp/v2/animal?per_page=100",
-      "https://animalcare.lacounty.gov/wp-json/wppro-acc/v1/animals",
-    ];
+    console.log("Connecting to Browserless.io...");
+    
+    // Connect to Browserless cloud browser
+    const browser = await puppeteer.default.connect({
+      browserWSEndpoint: `wss://chrome.browserless.io?token=${browserlessToken}`,
+    });
 
-    for (const apiUrl of apiUrls) {
-      try {
-        console.log(`Trying: ${apiUrl}`);
-        
-        const response = await fetchWithTimeout(apiUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-            "Referer": "https://animalcare.lacounty.gov/dacc-search/",
-          },
-        }, 15000);
+    console.log("Connected to Browserless!");
 
-        console.log(`Response status: ${response.status}`);
-        
-        if (response.ok) {
+    const page = await browser.newPage();
+    
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    // Intercept API responses
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("/wp-json/wppro-acc/v1/get/animals")) {
+        try {
           const data = await response.json();
-          console.log(`Data type: ${typeof data}, isArray: ${Array.isArray(data)}`);
+          console.log(`Intercepted API response: ${url.substring(0, 80)}...`);
           
-          if (Array.isArray(data) && data.length > 0) {
-            console.log(`Found ${data.length} animals from ${apiUrl}`);
-            allAnimals = data;
-            break;
+          if (Array.isArray(data)) {
+            console.log(`Found ${data.length} animals in API response`);
+            allAnimals.push(...data);
           } else if (data && typeof data === "object") {
-            // Check for nested data
-            const possibleArrays = [data.animals, data.data, data.results, data.items];
-            for (const arr of possibleArrays) {
-              if (Array.isArray(arr) && arr.length > 0) {
-                console.log(`Found ${arr.length} animals in nested array`);
-                allAnimals = arr;
-                break;
-              }
-            }
-            if (allAnimals.length > 0) break;
+            if (data.animals) allAnimals.push(...data.animals);
+            else if (data.data) allAnimals.push(...data.data);
+            else if (data.results) allAnimals.push(...data.results);
           }
+        } catch (e) {
+          // Not JSON or error parsing
         }
-      } catch (e) {
-        console.log(`Failed: ${apiUrl} - ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
-    }
+    });
 
-    // If direct API didn't work, try scraping the HTML page with fetch + cheerio
+    // Load the search page - use shorter timeout for Browserless free tier
+    console.log("Loading LA County search page...");
+    await page.goto(`${SEARCH_URL}?PageNumber=1&SortType=0&PageSize=100`, {
+      waitUntil: "networkidle2",
+      timeout: 45000, // 45 seconds to stay under 1 min limit
+    });
+
+    // Brief wait for API calls
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    console.log(`After first page: ${allAnimals.length} animals intercepted`);
+
+    // If we got animals from first page, that's enough for free tier
+    // (Can't do pagination due to 1-minute limit)
+
+    // If no API interception worked, try HTML scraping
     if (allAnimals.length === 0) {
-      console.log("Direct API failed, trying HTML scrape with cheerio...");
+      console.log("No API data intercepted, trying HTML scraping...");
       
-      try {
-        const cheerio = await import("cheerio");
+      const htmlAnimals = await page.evaluate(() => {
+        const animals: any[] = [];
+        const cards = document.querySelectorAll(".card.custom-card, .animal-card, [class*='pet-card'], .animal-item");
         
-        // Fetch the search page
-        const pageResponse = await fetchWithTimeout(
-          "https://animalcare.lacounty.gov/dacc-search/?PageNumber=1&PageSize=100",
-          {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Accept": "text/html",
-            },
-          },
-          30000
-        );
-
-        if (pageResponse.ok) {
-          const html = await pageResponse.text();
-          const $ = cheerio.load(html);
+        cards.forEach((card) => {
+          const heartBtn = card.querySelector("[data-id]");
+          const animalId = heartBtn?.getAttribute("data-id") || "";
+          const animalName = heartBtn?.getAttribute("data-name") || "";
+          const imageName = heartBtn?.getAttribute("data-image") || "";
           
-          console.log(`HTML page loaded, size: ${html.length}`);
+          const img = card.querySelector("img");
+          const imgSrc = img?.getAttribute("src") || "";
           
-          // Look for pet cards
-          $(".card.custom-card, .animal-card, [class*='pet']").each((_, card) => {
-            const $card = $(card);
-            
-            // Extract data from heart button (has data attributes)
-            const $heartBtn = $card.find("[data-id]");
-            const animalId = $heartBtn.attr("data-id") || "";
-            const animalName = $heartBtn.attr("data-name") || "";
-            const imageName = $heartBtn.attr("data-image") || "";
-            
-            // Get image
-            const imgSrc = $card.find("img").attr("src") || "";
-            
-            if (animalId) {
-              allAnimals.push({
-                animalId: animalId,
-                animalName: animalName || `Pet ${animalId}`,
-                image: imageName || imgSrc,
-                // Default values since we can't get full data from HTML
-                animalType: "DOG",
-                breed: "Mixed Breed",
-                sex: "Unknown",
-                location: "Downey",
-                imageCount: 1,
-              });
-            }
-          });
-          
-          console.log(`Cheerio found ${allAnimals.length} animals from HTML`);
-          
-          // Also check for inline JSON data
-          const scriptContent = html.match(/var\s+animalsData\s*=\s*(\[[\s\S]*?\]);/);
-          if (scriptContent) {
-            try {
-              const jsonData = JSON.parse(scriptContent[1]);
-              if (Array.isArray(jsonData) && jsonData.length > allAnimals.length) {
-                console.log(`Found ${jsonData.length} animals in inline script`);
-                allAnimals = jsonData;
-              }
-            } catch (e) {
-              console.log("Could not parse inline JSON");
-            }
+          if (animalId) {
+            animals.push({
+              animalId: animalId,
+              animalName: animalName || `Pet ${animalId}`,
+              image: imageName || imgSrc,
+              animalType: "DOG",
+              breed: "Mixed Breed",
+              sex: "Unknown",
+              location: "",
+              imageCount: 1,
+            });
           }
-        }
-      } catch (e) {
-        console.error("Cheerio scrape error:", e);
-      }
+        });
+        
+        return animals;
+      });
+
+      console.log(`HTML scraping found ${htmlAnimals.length} animals`);
+      allAnimals = htmlAnimals;
     }
 
-  } catch (error) {
-    console.error("LA County scraper error:", error);
-  }
-
-  console.log(`Total animals collected: ${allAnimals.length}`);
-
-  // Process animals
-  if (allAnimals.length > 0) {
-    console.log("Sample animal data:", JSON.stringify(allAnimals[0], null, 2));
+    await browser.close();
+    console.log("Browserless session closed");
     
-    for (const animal of allAnimals) {
-      try {
-        const animalId = animal.animalId || animal.AnimalId || animal.AnimalID || animal.id || `lac-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        const name = animal.animalName || animal.Name || animal.name || `Pet ${animalId}`;
-        const type = animal.animalType || animal.Type || animal.type || "DOG";
-        const species = type.toUpperCase().includes("CAT") ? "Cat" : "Dog";
-        const breed = animal.breed || animal.Breed || "Mixed Breed";
-        
-        // Calculate age
-        let age = "Adult";
-        if (animal.yearsOld !== undefined || animal.monthsOld !== undefined) {
-          const years = animal.yearsOld || 0;
-          const months = animal.monthsOld || 0;
-          if (years === 0 && months < 12) {
-            age = "Baby";
-          } else if (years < 2) {
-            age = "Young";
-          } else if (years < 8) {
-            age = "Adult";
-          } else {
-            age = "Senior";
-          }
-        }
-        
-        const gender = animal.sex || animal.Sex || animal.gender || "Unknown";
-        const size = animal.animalSize || animal.Size || animal.size || "Medium";
-        const location = animal.location || animal.Location || "";
-        
-        // Photo URL
-        const photos: string[] = [];
-        if (animal.imageCount > 0 || animal.image) {
-          photos.push(`${IMAGE_BASE}${animalId}.jpg`);
-        }
-        
-        const shelterSlug = mapLocationToSlug(location);
-        
-        const pet: ScrapedPet = {
-          externalId: String(animalId),
-          name: name,
-          species: species,
-          breed: breed,
-          age: normalizeAge(age),
-          gender: normalizeGender(gender),
-          size: normalizeSize(size),
-          description: animal.primaryColor ? `Color: ${animal.primaryColor}` : undefined,
-          photos: photos,
-          adoptionUrl: `https://animalcare.lacounty.gov/dacc-search/?AnimalID=${animalId}`,
-          color: animal.primaryColor || undefined,
-        };
+  } catch (error) {
+    console.error("Browserless error:", error);
+    // Fall back to direct API attempt
+    return scrapeDirectAPI(shelterPets);
+  }
 
-        if (!shelterPets.has(shelterSlug)) {
-          shelterPets.set(shelterSlug, []);
-        }
-        shelterPets.get(shelterSlug)!.push(pet);
-        
-      } catch (e) {
-        console.error("Error processing animal:", e);
+  return processAnimals(allAnimals, shelterPets);
+}
+
+// Fallback: try local Puppeteer (for localhost dev)
+async function scrapeWithLocalPuppeteer(shelterPets: Map<string, ScrapedPet[]>): Promise<Map<string, ScrapedPet[]>> {
+  let allAnimals: any[] = [];
+
+  try {
+    const puppeteer = await import("puppeteer");
+    
+    console.log("Launching local Puppeteer...");
+    
+    const browser = await puppeteer.default.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+
+    const page = await browser.newPage();
+    
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    );
+
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("/wp-json/wppro-acc/v1/get/animals")) {
+        try {
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            allAnimals.push(...data);
+          } else if (data?.animals) {
+            allAnimals.push(...data.animals);
+          }
+        } catch (e) {}
       }
+    });
+
+    await page.goto(`${SEARCH_URL}?PageNumber=1&SortType=0&PageSize=100`, {
+      waitUntil: "networkidle2",
+      timeout: 60000,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Paginate to get more animals
+    let pageNum = 2;
+    let previousCount = allAnimals.length;
+    
+    while (pageNum <= 10 && allAnimals.length > 0) {
+      await page.goto(`${SEARCH_URL}?PageNumber=${pageNum}&SortType=0&PageSize=100`, {
+        waitUntil: "networkidle2",
+        timeout: 30000,
+      });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      if (allAnimals.length === previousCount) break;
+      previousCount = allAnimals.length;
+      pageNum++;
+    }
+
+    await browser.close();
+    
+  } catch (error) {
+    console.error("Local Puppeteer error:", error);
+    return scrapeDirectAPI(shelterPets);
+  }
+
+  return processAnimals(allAnimals, shelterPets);
+}
+
+// Last resort: direct API calls
+async function scrapeDirectAPI(shelterPets: Map<string, ScrapedPet[]>): Promise<Map<string, ScrapedPet[]>> {
+  console.log("Trying direct API calls as last resort...");
+  
+  // This likely won't work but worth a try
+  try {
+    const response = await fetch("https://animalcare.lacounty.gov/wp-json/wppro-acc/v1/get/animals", {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+      },
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        return processAnimals(data, shelterPets);
+      }
+    }
+  } catch (e) {
+    console.log("Direct API failed");
+  }
+  
+  return shelterPets;
+}
+
+// Process raw animal data into ScrapedPets
+function processAnimals(allAnimals: any[], shelterPets: Map<string, ScrapedPet[]>): Map<string, ScrapedPet[]> {
+  console.log(`Processing ${allAnimals.length} animals...`);
+  
+  if (allAnimals.length > 0) {
+    console.log("Sample animal:", JSON.stringify(allAnimals[0], null, 2));
+  }
+
+  for (const animal of allAnimals) {
+    try {
+      const animalId = animal.animalId || animal.AnimalId || animal.id || `lac-${Date.now()}`;
+      const name = animal.animalName || animal.Name || animal.name || `Pet ${animalId}`;
+      const type = animal.animalType || animal.Type || animal.type || "DOG";
+      const species = type.toUpperCase().includes("CAT") ? "Cat" : "Dog";
+      const breed = animal.breed || animal.Breed || "Mixed Breed";
+      
+      let age = "Adult";
+      if (animal.yearsOld !== undefined || animal.monthsOld !== undefined) {
+        const years = animal.yearsOld || 0;
+        const months = animal.monthsOld || 0;
+        if (years === 0 && months < 12) age = "Baby";
+        else if (years < 2) age = "Young";
+        else if (years < 8) age = "Adult";
+        else age = "Senior";
+      }
+      
+      const gender = animal.sex || animal.Sex || "Unknown";
+      const size = animal.animalSize || animal.Size || "Medium";
+      const location = animal.location || animal.Location || "";
+      
+      const photos: string[] = [];
+      if (animal.imageCount > 0 || animal.image) {
+        photos.push(`${IMAGE_BASE}${animalId}.jpg`);
+      }
+      
+      const shelterSlug = mapLocationToSlug(location);
+      
+      const pet: ScrapedPet = {
+        externalId: String(animalId),
+        name,
+        species,
+        breed,
+        age: normalizeAge(age),
+        gender: normalizeGender(gender),
+        size: normalizeSize(size),
+        description: animal.primaryColor ? `Color: ${animal.primaryColor}` : undefined,
+        photos,
+        adoptionUrl: `https://animalcare.lacounty.gov/dacc-search/?AnimalID=${animalId}`,
+        color: animal.primaryColor,
+      };
+
+      if (!shelterPets.has(shelterSlug)) {
+        shelterPets.set(shelterSlug, []);
+      }
+      shelterPets.get(shelterSlug)!.push(pet);
+      
+    } catch (e) {
+      console.error("Error processing animal:", e);
     }
   }
 
-  // Log results
   for (const [slug, pets] of shelterPets.entries()) {
     if (pets.length > 0) {
       console.log(`${slug}: ${pets.length} pets`);
@@ -273,9 +325,9 @@ export const laCountyScraper: Scraper = {
     const shelters = getSheltersByScraperKey("la-county");
     const startTime = Date.now();
 
-    console.log("=== Starting LA County scraper (no Puppeteer) ===");
+    console.log("=== Starting LA County scraper ===");
 
-    const allPets = await scrapeDirectAPI();
+    const allPets = await scrapeWithBrowserless();
 
     const totalPets = Array.from(allPets.values()).reduce((sum, pets) => sum + pets.length, 0);
     console.log(`=== LA County scraper complete: ${totalPets} total pets ===`);
