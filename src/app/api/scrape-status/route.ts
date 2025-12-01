@@ -15,19 +15,23 @@ export async function GET() {
       select: { createdAt: true },
     });
 
-    // Check if data is stale (more than 6 hours old)
-    let isStale = false;
+    // Check if data is stale (more than 1 hour old)
+    let isStale = true; // Default to stale if no scrape log
     if (lastScrape) {
       const hoursSinceLastScrape = 
         (Date.now() - lastScrape.createdAt.getTime()) / (1000 * 60 * 60);
-      isStale = hoursSinceLastScrape > 6;
+      isStale = hoursSinceLastScrape > 1; // 1 hour instead of 6
     }
+
+    // Also consider data incomplete if very few pets (should have 100+)
+    const isIncomplete = petCount < 50;
 
     return NextResponse.json({
       petCount,
       lastScrapedAt: lastScrape?.createdAt?.toISOString() || null,
-      needsScrape: petCount === 0 || isStale,
+      needsScrape: petCount === 0 || isStale || isIncomplete,
       isStale,
+      isIncomplete,
     });
   } catch (error) {
     console.error("Error checking scrape status:", error);

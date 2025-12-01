@@ -24,12 +24,12 @@ export default function AutoScrapeLoader({ petCount, lastScrapedAt }: AutoScrape
   };
 
   useEffect(() => {
-    // Check if we already tried scraping in this session
+    // Check if we already tried scraping in this browser tab session
     const lastScrapeAttempt = sessionStorage.getItem('lastScrapeAttempt');
     const now = Date.now();
     
-    // If we tried scraping in the last 5 minutes, don't try again (break the loop)
-    if (lastScrapeAttempt && (now - parseInt(lastScrapeAttempt)) < 5 * 60 * 1000) {
+    // If we tried scraping in the last 2 minutes, don't try again (break the loop)
+    if (lastScrapeAttempt && (now - parseInt(lastScrapeAttempt)) < 2 * 60 * 1000) {
       addLog("Scrape was attempted recently, skipping to prevent loop");
       setIsLoading(false);
       return;
