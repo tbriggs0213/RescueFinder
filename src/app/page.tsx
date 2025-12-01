@@ -42,9 +42,16 @@ export default function Home() {
       try {
         const response = await fetch("/api/scrape-status");
         const status = await response.json();
-        setScrapeStatus(status);
+        // If we have pets and scraped recently, don't show loader
+        if (status.petCount > 0 && !status.needsScrape) {
+          setScrapeStatus({ ...status, needsScrape: false });
+        } else {
+          // Force scrape if no pets or stale data
+          setScrapeStatus({ petCount: 0, lastScrapedAt: null, needsScrape: true });
+        }
       } catch (error) {
         console.error("Error checking scrape status:", error);
+        // On error, trigger scrape
         setScrapeStatus({ petCount: 0, lastScrapedAt: null, needsScrape: true });
       }
     };
